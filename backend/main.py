@@ -9,6 +9,9 @@ import razorpay
 
 load_dotenv()
 
+import os
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(os.path.dirname(__file__), "adc-credentials.json")
+
 client = genai.Client(
     vertexai=True,
     project="project-c89d95a4-4fa7-4736-986",

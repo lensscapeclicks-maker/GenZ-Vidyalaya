@@ -2,3 +2,4 @@ node_modules/
 backend/.env
 frontend/node_modules/
 __pycache__/
+backend/adc-credentials.json
