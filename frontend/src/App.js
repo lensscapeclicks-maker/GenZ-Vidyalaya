@@ -142,6 +142,9 @@ export default function App() {
   const [timerActive, setTimerActive] = useState(false);
   const [quizSetup, setQuizSetup] = useState(false);
   const [quizConfig, setQuizConfig] = useState({ count: 30, difficulty: 'intermediate' });
+  const [quizQuestions, setQuizQuestions] = useState([]);
+const [quizBatch, setQuizBatch] = useState(0);
+const [quizTotalBatches, setQuizTotalBatches] = useState(0);
   const [progress, setProgress] = useState({ cleared: [], viewed: [] });
   const [premium, setPremium] = useState(getPremium());
   const [showPaywall, setShowPaywall] = useState(false);
@@ -207,24 +210,33 @@ export default function App() {
   };
 
   const startQuiz = async () => {
-    const t = selectedTrack?.name;
-    if (!t) return;
-    setLoading(true);
-    setData(null);
-    setQuizAnswers({});
-    setQuizSubmitted(false);
-    try {
-      const res = await axios.post(`${API}/quiz/${encodeURIComponent(t)}?num_questions=${quizConfig.count}&difficulty=${quizConfig.difficulty}&exam_id=${selectedTrack.id}`);
-      setData(res.data);
-      setQuizSetup(false);
-      setTimeLeft(quizConfig.count * 72);
-      setTimerActive(true);
-    } catch (e) {
-      alert('Error: ' + (e.response?.data?.detail || e.message));
-      setTimerActive(false);
-    }
-    setLoading(false);
-  };
+  const t = selectedTrack?.name;
+  if (!t) return;
+
+  setLoading(true);
+  setData(null);
+  setQuizAnswers({});
+  setQuizSubmitted(false);
+  setQuizBatch(0);
+  setQuizTotalBatches(Math.ceil(quizConfig.count / 10));
+
+  try {
+    const res = await axios.post(
+      `${API}/quiz/${encodeURIComponent(t)}?num_questions=${quizConfig.count}&difficulty=${quizConfig.difficulty}&exam_id=${selectedTrack.id}`
+    );
+
+    setData(res.data);
+    setQuizQuestions(res.data.questions || []);
+    setQuizSetup(false);
+    setTimeLeft(quizConfig.count * 72);
+    setTimerActive(true);
+  } catch (e) {
+    alert('Error: ' + (e.response?.data?.detail || e.message));
+    setTimerActive(false);
+  }
+
+  setLoading(false);
+};
 
   const markViewed = (topicName) => {
     setProgress(prev => {
@@ -629,32 +641,104 @@ export default function App() {
           {data && activeTab === 'quiz' && !quizSetup && (
             <div>
               <h2 style={s.title}>{data.topic} — {lang === 'en' ? 'mock test' : 'मॉक टेस्ट'} ({data.difficulty})</h2>
-              {data.questions?.map(q => (
-                <div key={q.id} style={s.questionCard}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <span style={{ fontSize: '12px', color: C.slate, fontFamily: 'IBM Plex Mono, monospace' }}>Q{q.id}</span>
-                    {q.topic_tag && <span style={s.tagPill}>{q.topic_tag}</span>}
-                  </div>
-                  <p style={s.question}>{q.question}</p>
-                  <div style={s.options}>
-                    {q.options?.map((opt, i) => (
-                      <button key={i}
-                        style={{
-                          ...s.option,
-                          ...(quizAnswers[q.id] === opt[0] ? { borderColor: selectedTrack?.color, background: C.surface2, color: selectedTrack?.color } : {}),
-                          ...(quizSubmitted && opt[0] === q.correct ? { borderColor: C.teal, background: C.tealDim + '33', color: C.teal } : {}),
-                          ...(quizSubmitted && quizAnswers[q.id] === opt[0] && opt[0] !== q.correct ? { borderColor: C.red, background: '#3A1D18', color: '#E8A594' } : {}),
-                        }}
-                        onClick={() => !quizSubmitted && setQuizAnswers(prev => ({ ...prev, [q.id]: opt[0] }))}>{opt}</button>
-                    ))}
-                  </div>
-                  {quizSubmitted && <div style={s.explanation}>{q.explanation}</div>}
-                </div>
-              ))}
+             {quizQuestions
+  .slice(quizBatch * 10, (quizBatch + 1) * 10)
+  .map(q => (
+    <div key={q.id} style={s.questionCard}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+        <span style={{ fontSize: '12px', color: C.slate, fontFamily: 'IBMPlex Mono, monospace' }}>
+          Q{q.id}
+        </span>
+        {q.topic_tag && <span style={s.tagPill}>{q.topic_tag}</span>}
+      </div>
 
-              {!quizSubmitted && data.questions?.length > 0 && (
-                <button style={{ ...s.primaryBtn, background: selectedTrack?.color }} onClick={() => { setTimerActive(false); setQuizSubmitted(true); }}>Submit quiz</button>
-              )}
+      <p style={s.question}>{q.question}</p>
+
+      <div style={s.options}>
+        {q.options?.map((opt, i) => (
+          <button
+            key={i}
+            style={{
+              ...s.option,
+              ...(quizAnswers[q.id] === opt[0]
+                ? {
+                    borderColor: selectedTrack?.color,
+                    background: C.surface2,
+                    color: selectedTrack?.color
+                  }
+                : {}),
+              ...(quizSubmitted && opt[0] === q.correct
+                ? {
+                    borderColor: C.teal,
+                    background: C.tealDim + '33',
+                    color: C.teal
+                  }
+                : {}),
+              ...(quizSubmitted &&
+              quizAnswers[q.id] === opt[0] &&
+              opt[0] !== q.correct
+                ? {
+                    borderColor: C.red,
+                    background: '#3A1D18',
+                    color: '#E8A594'
+                  }
+                : {}),
+            }}
+            onClick={() =>
+              !quizSubmitted &&
+              setQuizAnswers(prev => ({
+                ...prev,
+                [q.id]: opt[0]
+              }))
+            }
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
+
+      {quizSubmitted && (
+        <div style={s.explanation}>{q.explanation}</div>
+      )}
+    </div>
+  ))}
+                       
+
+         {!quizSubmitted && quizQuestions.length > 0 && (
+  <div style={{ marginTop: '20px' }}>
+    <div style={{
+      textAlign: 'center',
+      color: C.slate,
+      fontSize: '12px',
+      marginBottom: '10px',
+      fontFamily: 'IBM Plex Mono, monospace'
+    }}>
+      Questions {quizBatch * 10 + 1}–{Math.min((quizBatch + 1) * 10, quizQuestions.length)} of {quizQuestions.length}
+    </div>
+
+    {quizBatch < quizTotalBatches - 1 ? (
+      <button
+        style={{ ...s.primaryBtn, background: selectedTrack?.color }}
+        onClick={() => {
+          setQuizBatch(batch => batch + 1);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
+      >
+        Next 10 questions →
+      </button>
+    ) : (
+      <button
+        style={{ ...s.primaryBtn, background: selectedTrack?.color }}
+        onClick={() => {
+          setTimerActive(false);
+          setQuizSubmitted(true);
+        }}
+      >
+        Submit quiz
+      </button>
+    )}
+  </div>
+)}
 
               {quizSubmitted && (
                 <div>
