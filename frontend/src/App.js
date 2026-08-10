@@ -307,7 +307,7 @@ export default function App() {
   const openTopicDrawer = async (topicName) => {
     if (!premium) { openPaywall('Full topic details and resources'); return; }
     setDrawer({ topic: topicName, loading: true });
-    setDrawerLoading(true);
+  
     markViewed(topicName);
     try {
       const res = await axios.get(`${API}/topic-detail/${encodeURIComponent(selectedTrack?.name)}/${encodeURIComponent(topicName)}`);
@@ -315,7 +315,7 @@ export default function App() {
     } catch (e) {
       setDrawer({ topic: topicName, loading: false, error: true });
     }
-    setDrawerLoading(false);
+    
   };
 
   const switchTab = (tabId) => {
