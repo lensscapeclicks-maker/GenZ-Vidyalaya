@@ -133,7 +133,7 @@ export default function App() {
   const [lang, setLang] = useState('en');
   const [expandedStage, setExpandedStage] = useState(null);
   const [drawer, setDrawer] = useState(null);
-  const [drawerLoading, setDrawerLoading] = useState(false);
+ 
   const [studyTime, setStudyTime] = useState(0);
   const [studyRunning, setStudyRunning] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState({});
@@ -342,7 +342,7 @@ export default function App() {
     return scores;
   };
 
-  const clearedCount = (tracks) => tracks; // placeholder not used
+  
 
   // ---------------- HOME ----------------
   if (screen === 'home') {
