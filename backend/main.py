@@ -10,7 +10,9 @@ import razorpay
 load_dotenv()
 
 import os
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(os.path.dirname(__file__), "adc-credentials.json")
+_local_path = os.path.join(os.path.dirname(__file__), "adc-credentials.json")
+_render_path = "/etc/secrets/adc-credentials.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _render_path if os.path.exists(_render_path) else _local_path
 
 client = genai.Client(
     vertexai=True,
