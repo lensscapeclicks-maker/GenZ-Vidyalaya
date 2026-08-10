@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import './App.css';
 
-const API = 'http://localhost:8000';
+const API = 'https://genz-vidyalaya-api.onrender.com';
 
 const C = {
   ink: '#10131A',
