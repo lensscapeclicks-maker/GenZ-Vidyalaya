@@ -270,29 +270,55 @@ async def root():
 @app.post("/signup")
 async def signup(req: SignupRequest):
     require_supabase()
+
     phone = normalize_phone(req.phone)
+
     if len(phone) < 10:
         raise HTTPException(status_code=400, detail="Enter a valid phone number")
+
     if not req.mpin.isdigit() or not (4 <= len(req.mpin) <= 6):
         raise HTTPException(status_code=400, detail="MPIN must be 4-6 digits")
 
-    existing = get_user_row(phone)
-    if existing:
-        raise HTTPException(status_code=400, detail="This phone number is already registered — try logging in instead")
-
-    row = {
-        "phone": phone,
-        "mpin_hash": hash_mpin(req.mpin),
-        "is_premium": False,
-        "mock_tests_used_today": 0,
-        "daily_update_trial_used": False,
-    }
     try:
-        supabase.table("users").insert(row).execute()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        existing = get_user_row(phone)
 
-    return compute_status(row)
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="This phone number is already registered — try logging in instead"
+            )
+
+        row = {
+            "phone": phone,
+            "mpin_hash": hash_mpin(req.mpin),
+            "is_premium": False,
+            "mock_tests_used_today": 0,
+            "daily_update_trial_used": False,
+        }
+
+        print("SIGNUP INSERT:", row)
+
+        result = supabase.table("users").insert(row).execute()
+
+        print("SIGNUP SUCCESS:", result.data)
+
+        created_user = result.data[0] if result.data else row
+
+        return compute_status(created_user)
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print("========== SIGNUP DATABASE ERROR ==========")
+        print(type(e).__name__)
+        print(str(e))
+        print("===========================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Signup database error: {str(e)}"
+        )
 
 @app.post("/login")
 async def login(req: LoginRequest):
