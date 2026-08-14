@@ -1,15 +1,21 @@
 from fastapi import FastAPI, HTTPException
+import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 from dotenv import load_dotenv
 import os
 import json
+import re
 import razorpay
+import bcrypt
+from datetime import datetime, timezone, date, timedelta
+from zoneinfo import ZoneInfo
+from supabase import create_client, Client
+from google.genai import types
 
 load_dotenv()
 
-import os
 _local_path = os.path.join(os.path.dirname(__file__), "adc-credentials.json")
 _render_path = "/etc/secrets/adc-credentials.json"
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _render_path if os.path.exists(_render_path) else _local_path
@@ -23,6 +29,14 @@ client = genai.Client(
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)) if RAZORPAY_KEY_ID else None
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+supabase: Client = (
+    create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_KEY else None
+)
+
+FREE_MOCK_TESTS_PER_DAY = 5
 
 # Prices in INR rupees — must match the PLANS array in App.js
 PLAN_PRICES = {
@@ -55,19 +69,342 @@ class VerifyRequest(BaseModel):
     razorpay_signature: str
     plan_id: str
 
+class SignupRequest(BaseModel):
+    phone: str
+    mpin: str
+
+class LoginRequest(BaseModel):
+    phone: str
+    mpin: str
+
+class ConsumeRequest(BaseModel):
+    phone: str
+
+class FeedbackRequest(BaseModel):
+    phone: str | None = None
+    rating: int
+    comment: str | None = None
+
 def clean_json(text):
-    text = text.strip()
+    text = (text or "").strip()
     if text.startswith("```json"):
         text = text[7:]
-    if text.startswith("```"):
+    elif text.startswith("```"):
         text = text[3:]
     if text.endswith("```"):
         text = text[:-3]
     return text.strip()
 
+
+_CACHE_PREFIX = "v2"
+_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
+_CACHE_LOCKS_GUARD = asyncio.Lock()
+
+
+async def _get_cache_lock(cache_key: str) -> asyncio.Lock:
+    async with _CACHE_LOCKS_GUARD:
+        lock = _CACHE_LOCKS.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _CACHE_LOCKS[cache_key] = lock
+        return lock
+
+
+def cache_get(cache_key: str):
+    if not supabase:
+        return None
+    try:
+        res = (
+            supabase.table("content_cache")
+            .select("content, expires_at")
+            .eq("cache_key", cache_key)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        expires_at = row.get("expires_at")
+        if expires_at:
+            try:
+                expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if expiry <= datetime.now(timezone.utc):
+                    return None
+            except Exception:
+                return None
+        return row.get("content")
+    except Exception:
+        # Missing table, network hiccup, etc — a cache miss must never break
+        # a real response. Just fall through to a fresh generation.
+        return None
+
+
+def cache_put(cache_key: str, content: dict, expires_at: datetime | None = None):
+    if not supabase:
+        return
+    try:
+        row = {
+            "cache_key": cache_key,
+            "content": content,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        }
+        supabase.table("content_cache").upsert(row, on_conflict="cache_key").execute()
+    except Exception:
+        # Caching is an optimization; a cache write must never break a successful response.
+        pass
+
+
+async def _generate_json(prompt: str) -> dict:
+    """Calls Gemini once, in strict JSON mode, with one automatic repair
+    pass if the model's output isn't valid JSON. Shared by both the cached
+    and non-cached generation paths below."""
+    response = await client.aio.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.2,
+        ),
+    )
+    text = clean_json(response.text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        repair_response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Return ONLY valid JSON. Repair this JSON without changing its meaning. "
+                "Do not add markdown, explanations, or extra keys.\n\n" + text
+            ),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0,
+            ),
+        )
+        return json.loads(clean_json(repair_response.text))
+
+
+async def generate_json_cached(cache_key: str, prompt: str, *, expires_at: datetime | None = None):
+    """For content that SHOULD be identical across users — roadmap, notes,
+    topic detail, daily update. Speeds up every repeat request after the
+    first."""
+    cached = await asyncio.to_thread(cache_get, cache_key)
+    if cached is not None:
+        return cached
+
+    lock = await _get_cache_lock(cache_key)
+    async with lock:
+        cached = await asyncio.to_thread(cache_get, cache_key)
+        if cached is not None:
+            return cached
+
+        data = await _generate_json(prompt)
+        await asyncio.to_thread(cache_put, cache_key, data, expires_at)
+        return data
+
+
+async def generate_json_fresh(prompt: str):
+    """For content that must be different every time — mock test questions.
+    Deliberately NOT cached: caching this would silently serve the exact
+    same questions to every student on the same exam/difficulty, and would
+    make the 'Try again with new questions' button lie."""
+    return await _generate_json(prompt)
+
+def normalize_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    return digits
+
+def hash_mpin(mpin: str) -> str:
+    return bcrypt.hashpw(mpin.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_mpin(mpin: str, mpin_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(mpin.encode("utf-8"), mpin_hash.encode("utf-8"))
+    except Exception:
+        return False
+
+def require_supabase():
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Account system not configured on the server (.env)")
+
+def get_user_row(phone: str):
+    res = supabase.table("users").select("*").eq("phone", phone).limit(1).execute()
+    rows = res.data or []
+    return rows[0] if rows else None
+
+def compute_status(user: dict) -> dict:
+    """Given a raw users row, work out current premium/usage status,
+    resetting the daily mock-test counter if the stored date isn't today."""
+    now = datetime.now(timezone.utc)
+    today = date.today().isoformat()
+
+    is_premium = False
+    if user.get("premium_expiry"):
+        try:
+            expiry = datetime.fromisoformat(user["premium_expiry"].replace("Z", "+00:00"))
+            is_premium = expiry > now
+        except Exception:
+            is_premium = False
+
+    used_today = user.get("mock_tests_used_today") or 0
+    last_date = user.get("last_mock_test_date")
+    if last_date != today:
+        used_today = 0  # a new day — the stored counter is stale, treat as reset
+
+    remaining = None if is_premium else max(0, FREE_MOCK_TESTS_PER_DAY - used_today)
+
+    return {
+        "phone": user["phone"],
+        "is_premium": is_premium,
+        "premium_expiry": user.get("premium_expiry"),
+        "mock_tests_remaining_today": remaining,
+        "daily_update_trial_used": bool(user.get("daily_update_trial_used")),
+    }
+
 @app.get("/")
 async def root():
     return {"message": "GenZ Vidyalaya API is running"}
+
+@app.post("/signup")
+async def signup(req: SignupRequest):
+    require_supabase()
+    phone = normalize_phone(req.phone)
+    if len(phone) < 10:
+        raise HTTPException(status_code=400, detail="Enter a valid phone number")
+    if not req.mpin.isdigit() or not (4 <= len(req.mpin) <= 6):
+        raise HTTPException(status_code=400, detail="MPIN must be 4-6 digits")
+
+    existing = get_user_row(phone)
+    if existing:
+        raise HTTPException(status_code=400, detail="This phone number is already registered — try logging in instead")
+
+    row = {
+        "phone": phone,
+        "mpin_hash": hash_mpin(req.mpin),
+        "is_premium": False,
+        "mock_tests_used_today": 0,
+        "daily_update_trial_used": False,
+    }
+    try:
+        supabase.table("users").insert(row).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return compute_status(row)
+
+@app.post("/login")
+async def login(req: LoginRequest):
+    require_supabase()
+    phone = normalize_phone(req.phone)
+    user = get_user_row(phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this phone number")
+    if not verify_mpin(req.mpin, user["mpin_hash"]):
+        raise HTTPException(status_code=401, detail="Incorrect MPIN")
+
+    return compute_status(user)
+
+@app.get("/account-status/{phone}")
+async def account_status(phone: str):
+    require_supabase()
+    phone = normalize_phone(phone)
+    user = get_user_row(phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this phone number")
+    return compute_status(user)
+
+@app.post("/consume-mock-test")
+async def consume_mock_test(req: ConsumeRequest):
+    """Free users get 5 mock tests per day, resetting daily. Premium users
+    are unlimited. Uses the same mock_tests_used_today / last_mock_test_date
+    columns that compute_status() reads, so the two stay in sync."""
+    require_supabase()
+    phone = normalize_phone(req.phone)
+    user = get_user_row(phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this phone number")
+
+    status = compute_status(user)
+    if status["is_premium"]:
+        return {"allowed": True, "remaining": None}
+
+    if status["mock_tests_remaining_today"] <= 0:
+        return {"allowed": False, "remaining": 0}
+
+    today = date.today().isoformat()
+    already_today = user.get("last_mock_test_date") == today
+    new_count = (user.get("mock_tests_used_today") or 0) + 1 if already_today else 1
+    try:
+        supabase.table("users").update({
+            "mock_tests_used_today": new_count,
+            "last_mock_test_date": today,
+        }).eq("phone", phone).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"allowed": True, "remaining": max(0, FREE_MOCK_TESTS_PER_DAY - new_count)}
+
+@app.post("/consume-daily-trial")
+async def consume_daily_trial(req: ConsumeRequest):
+    """Call this right before showing Daily Update. Free users get exactly
+    one look, ever, across the lifetime of the account."""
+    require_supabase()
+    phone = normalize_phone(req.phone)
+    user = get_user_row(phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this phone number")
+
+    status = compute_status(user)
+    if status["is_premium"]:
+        return {"allowed": True}
+
+    if status["daily_update_trial_used"]:
+        return {"allowed": False}
+
+    try:
+        supabase.table("users").update({"daily_update_trial_used": True}).eq("phone", phone).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"allowed": True}
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """Stores a student review/rating. Requires a 'feedback' table in
+    Supabase — see the setup SQL provided alongside this file."""
+    require_supabase()
+    if not (1 <= req.rating <= 5):
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+
+    row = {
+        "phone": normalize_phone(req.phone) if req.phone else None,
+        "rating": req.rating,
+        "comment": (req.comment or "").strip()[:1000],
+    }
+    try:
+        supabase.table("feedback").insert(row).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"submitted": True}
+
+@app.get("/feedback")
+async def list_feedback(limit: int = 20):
+    """Returns the most recent feedback entries, newest first."""
+    require_supabase()
+    try:
+        res = (
+            supabase.table("feedback")
+            .select("rating, comment, created_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return {"reviews": res.data or []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/create-order")
 async def create_order(req: OrderRequest):
@@ -93,8 +430,11 @@ async def create_order(req: OrderRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class VerifyRequestWithPhone(VerifyRequest):
+    phone: str | None = None
+
 @app.post("/verify-payment")
-async def verify_payment(req: VerifyRequest):
+async def verify_payment(req: VerifyRequestWithPhone):
     if not razorpay_client:
         raise HTTPException(status_code=500, detail="Razorpay keys not configured on the server (.env)")
     try:
@@ -104,13 +444,24 @@ async def verify_payment(req: VerifyRequest):
             "razorpay_signature": req.razorpay_signature,
         })
         days = PLAN_DAYS.get(req.plan_id, 30)
+
+        if req.phone and supabase:
+            phone = normalize_phone(req.phone)
+            user = get_user_row(phone)
+            if user:
+                expiry = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+                supabase.table("users").update({
+                    "is_premium": True,
+                    "premium_expiry": expiry,
+                }).eq("phone", phone).execute()
+
         return {"verified": True, "plan_id": req.plan_id, "valid_days": days}
     except razorpay.errors.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Signature verification failed — payment could not be confirmed as genuine")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/roadmap/{topic}")
+@app.get("/roadmap/{topic:path}")
 async def get_roadmap(topic: str):
     try:
         prompt = f"""You are GenZ Vidyalaya, an expert Indian education assistant.
@@ -140,11 +491,10 @@ Format as JSON:
     "exam_relevance": ["exam1", "exam2"]
 }}
 Return only valid JSON, no extra text."""
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+        return await generate_json_cached(
+            f"{_CACHE_PREFIX}:roadmap:{topic}",
+            prompt,
         )
-        return json.loads(clean_json(response.text))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -193,11 +543,10 @@ Format as JSON:
     ]
 }}
 Return only valid JSON, no extra text."""
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+        return await generate_json_cached(
+            f"{_CACHE_PREFIX}:topic:{topic}:{subtopic}",
+            prompt,
         )
-        return json.loads(clean_json(response.text))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -232,11 +581,10 @@ Format as JSON:
     "quick_revision": ["fact1", "fact2", "fact3", "fact4", "fact5"]
 }}
 Return only valid JSON, no extra text."""
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+        return await generate_json_cached(
+            f"{_CACHE_PREFIX}:notes:{topic}",
+            prompt,
         )
-        return json.loads(clean_json(response.text))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -288,11 +636,8 @@ Format as JSON:
     ]
 }}
 Return only valid JSON. Generate all {num_questions} questions."""
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        return json.loads(clean_json(response.text))
+        # Deliberately NOT cached — see generate_json_fresh's docstring.
+        return await generate_json_fresh(prompt)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -323,15 +668,16 @@ Format as JSON:
     }}
 }}
 Provide 5 to 8 updates. Return only valid JSON, no extra text."""
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
+        india_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        next_india_day = (india_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return await generate_json_cached(
+            f"{_CACHE_PREFIX}:daily:{topic}:{india_now.date().isoformat()}",
+            prompt,
+            expires_at=next_india_day.astimezone(timezone.utc),
         )
-        return json.loads(clean_json(response.text))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    

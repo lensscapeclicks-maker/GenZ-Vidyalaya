@@ -6,12 +6,11 @@ import {
   Video, Image as ImageIcon, Camera, Aperture, Code, Globe, LineChart,
   Palette, TrendingUp, PiggyBank, Smartphone, Laptop,
   ArrowLeft, Clock, X, ExternalLink, FileText, GraduationCap,
-  ChevronDown, ChevronUp, PlayCircle,
+  ChevronDown, ChevronUp, PlayCircle, User, LogOut, Star, MessageSquare,
 } from 'lucide-react';
 import './App.css';
 
-const API = 'https://genz-vidyalaya-api.onrender.com';
-
+const API =  'https://genz-vidyalaya-api.onrender.com';
 const C = {
   ink: '#10131A',
   surface: '#161B24',
@@ -83,22 +82,35 @@ const PLANS = [
   { id: 'annual', label: 'Annual', price: 469, duration: '365 days', days: 365, blurb: 'Best value' },
 ];
 
-function getPremium() {
+// ---------------- ACCOUNT (backend-linked — replaces old browser-only premium flag) ----------------
+// Shape stored: { phone, isPremium, premiumExpiry, mockTestsRemainingToday, dailyUpdateTrialUsed }
+function getAccount() {
   try {
-    const raw = localStorage.getItem('genz_premium');
-    if (!raw) return null;
-    const p = JSON.parse(raw);
-    if (p?.expiry && p.expiry > Date.now()) return p;
-    return null;
+    const raw = localStorage.getItem('genz_account');
+    return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
-function setPremiumLS(planId, days) {
-  const expiry = Date.now() + days * 24 * 60 * 60 * 1000;
-  localStorage.setItem('genz_premium', JSON.stringify({ planId, expiry }));
+function setAccountLS(account) {
+  localStorage.setItem('genz_account', JSON.stringify(account));
 }
-function daysLeft(expiry) {
+function clearAccountLS() {
+  localStorage.removeItem('genz_account');
+}
+function accountFromStatus(status) {
+  // Maps the FastAPI compute_status() response shape onto our frontend account shape.
+  return {
+    phone: status.phone,
+    isPremium: !!status.is_premium,
+    premiumExpiry: status.premium_expiry || null,
+    mockTestsRemainingToday: status.mock_tests_remaining_today ?? null,
+    dailyUpdateTrialUsed: !!status.daily_update_trial_used,
+  };
+}
+function daysLeft(expiryIso) {
+  if (!expiryIso) return 0;
+  const expiry = new Date(expiryIso).getTime();
   return Math.max(0, Math.ceil((expiry - Date.now()) / (24 * 60 * 60 * 1000)));
 }
 function loadRazorpayScript() {
@@ -133,7 +145,7 @@ export default function App() {
   const [lang, setLang] = useState('en');
   const [expandedStage, setExpandedStage] = useState(null);
   const [drawer, setDrawer] = useState(null);
- 
+
   const [studyTime, setStudyTime] = useState(0);
   const [studyRunning, setStudyRunning] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState({});
@@ -143,13 +155,33 @@ export default function App() {
   const [quizSetup, setQuizSetup] = useState(false);
   const [quizConfig, setQuizConfig] = useState({ count: 30, difficulty: 'intermediate' });
   const [quizQuestions, setQuizQuestions] = useState([]);
-const [quizBatch, setQuizBatch] = useState(0);
-const [quizTotalBatches, setQuizTotalBatches] = useState(0);
+  const [quizBatch, setQuizBatch] = useState(0);
+  const [quizTotalBatches, setQuizTotalBatches] = useState(0);
   const [progress, setProgress] = useState({ cleared: [], viewed: [] });
-  const [premium, setPremium] = useState(getPremium());
+
+  // ---- account / auth state ----
+  const [account, setAccount] = useState(getAccount());
+  const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState('signup'); // 'signup' | 'login'
+  const [authPhone, setAuthPhone] = useState('');
+  const [authMpin, setAuthMpin] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [pendingAction, setPendingAction] = useState(null); // fn to run right after successful auth
+
+  // ---- paywall state ----
   const [showPaywall, setShowPaywall] = useState(false);
   const [paywallReason, setPaywallReason] = useState('');
   const [payingPlanId, setPayingPlanId] = useState(null);
+
+  // ---- feedback state ----
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackComment, setFeedbackComment] = useState('');
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [feedbackDone, setFeedbackDone] = useState(false);
+
   const timerRef = useRef(null);
   const studyRef = useRef(null);
 
@@ -169,6 +201,23 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
     } else clearInterval(studyRef.current);
     return () => clearInterval(studyRef.current);
   }, [studyRunning]);
+
+  // On load, if we have a saved account, refresh its status from the server —
+  // this is what makes a payment made on another device/tab show up here.
+  useEffect(() => {
+    if (account?.phone) {
+      axios.get(`${API}/account-status/${encodeURIComponent(account.phone)}`)
+        .then(res => {
+          const fresh = accountFromStatus(res.data);
+          setAccount(fresh);
+          setAccountLS(fresh);
+        })
+        .catch(() => {
+          // If the account no longer resolves server-side, don't silently trust stale local data.
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const formatTime = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 
@@ -209,34 +258,107 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
     setLoading(false);
   };
 
+  // ---------------- AUTH ----------------
+  const openAuth = (mode, afterSuccess) => {
+    setAuthMode(mode);
+    setAuthError('');
+    setAuthPhone('');
+    setAuthMpin('');
+    setPendingAction(() => afterSuccess || null);
+    setShowAuth(true);
+  };
+
+  // Runs `action` if already logged in; otherwise opens signup and runs
+  // `action` right after a successful signup/login.
+  const requireAccount = (action) => {
+    if (account?.phone) {
+      action();
+    } else {
+      openAuth('signup', action);
+    }
+  };
+
+  const submitAuth = async () => {
+    setAuthError('');
+    const phoneDigits = authPhone.replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(phoneDigits)) {
+      setAuthError('Enter a valid 10-digit Indian phone number.');
+      return;
+    }
+    if (!/^\d{4,6}$/.test(authMpin)) {
+      setAuthError('MPIN must be 4 to 6 digits.');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const endpoint = authMode === 'signup' ? '/signup' : '/login';
+      const res = await axios.post(`${API}${endpoint}`, { phone: phoneDigits, mpin: authMpin });
+      const acc = accountFromStatus(res.data);
+      setAccount(acc);
+      setAccountLS(acc);
+      setShowAuth(false);
+      setAuthPhone('');
+      setAuthMpin('');
+      const action = pendingAction;
+      setPendingAction(null);
+      if (action) action();
+    } catch (e) {
+      setAuthError(e.response?.data?.detail || 'Something went wrong. Try again.');
+    }
+    setAuthLoading(false);
+  };
+
+  const logout = () => {
+    clearAccountLS();
+    setAccount(null);
+  };
+
+  // ---------------- MOCK TEST (5 free/day, then paywall) ----------------
   const startQuiz = async () => {
-  const t = selectedTrack?.name;
-  if (!t) return;
+    const t = selectedTrack?.name;
+    if (!t) return;
 
-  setLoading(true);
-  setData(null);
-  setQuizAnswers({});
-  setQuizSubmitted(false);
-  setQuizBatch(0);
-  setQuizTotalBatches(Math.ceil(quizConfig.count / 10));
+   requireAccount(() => {
+  runQuizConsumeAndStart(t);
+});
+  };
 
-  try {
+  const runQuizConsumeAndStart = async (t) => {
+    const phone = account?.phone;
+    if (!phone) return; // requireAccount should have set this before we get here
+    setLoading(true);
+    try {
+      const consumeRes = await axios.post(`${API}/consume-mock-test`, { phone });
+      if (!consumeRes.data.allowed) {
+        setLoading(false);
+        openPaywall('Mock tests');
+        return;
+      }
+      // reflect updated remaining count locally
+      const updated = { ...account, mockTestsRemainingToday: consumeRes.data.remaining };
+      setAccount(updated);
+      setAccountLS(updated);
+
+      setData(null);
+      setQuizAnswers({});
+      setQuizSubmitted(false);
+      setQuizBatch(0);
+      setQuizTotalBatches(Math.ceil(quizConfig.count / 10));
+
     const res = await axios.post(
-      `${API}/quiz/${encodeURIComponent(t)}?num_questions=${quizConfig.count}&difficulty=${quizConfig.difficulty}&exam_id=${selectedTrack.id}`
-    );
-
-    setData(res.data);
-    setQuizQuestions(res.data.questions || []);
-    setQuizSetup(false);
-    setTimeLeft(quizConfig.count * 72);
-    setTimerActive(true);
-  } catch (e) {
-    alert('Error: ' + (e.response?.data?.detail || e.message));
-    setTimerActive(false);
-  }
-
-  setLoading(false);
-};
+  `${API}/quiz/${encodeURIComponent(t)}?num_questions=${quizConfig.count}&difficulty=${quizConfig.difficulty}&exam_id=${selectedTrack.id}&phone=${encodeURIComponent(phone)}`
+);
+      setData(res.data);
+      setQuizQuestions(res.data.questions || []);
+      setQuizSetup(false);
+      setTimeLeft(quizConfig.count * 72);
+      setTimerActive(true);
+    } catch (e) {
+      alert('Error: ' + (e.response?.data?.detail || e.message));
+      setTimerActive(false);
+    }
+    setLoading(false);
+  };
 
   const markViewed = (topicName) => {
     setProgress(prev => {
@@ -270,6 +392,12 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
   };
 
   const subscribe = async (plan) => {
+    // Payment must be tied to an account, or Supabase has no phone to upgrade.
+    if (!account?.phone) {
+      setShowPaywall(false);
+      openAuth('signup', () => { setShowPaywall(true); });
+      return;
+    }
     setPayingPlanId(plan.id);
     const ok = await loadRazorpayScript();
     if (!ok) {
@@ -290,14 +418,19 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
         theme: { color: C.teal },
         handler: async function (response) {
           try {
-            await axios.post(`${API}/verify-payment`, {
+             await axios.post(`${API}/verify-payment`, {
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_signature: response.razorpay_signature,
               plan_id: plan.id,
+              phone: account.phone,
             });
-            setPremiumLS(plan.id, plan.days);
-            setPremium(getPremium());
+            // Pull fresh status from the server rather than trusting the client-side plan
+            // duration blindly — this is the actual source of truth now.
+            const statusRes = await axios.get(`${API}/account-status/${encodeURIComponent(account.phone)}`);
+            const fresh = accountFromStatus(statusRes.data);
+            setAccount(fresh);
+            setAccountLS(fresh);
             setShowPaywall(false);
           } catch (e) {
             alert('Payment went through but verification failed. If money was deducted, contact support before retrying.');
@@ -316,28 +449,61 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
     }
   };
 
-  const openTopicDrawer = async (topicName) => {
-    if (!premium) { openPaywall('Full topic details and resources'); return; }
-    setDrawer({ topic: topicName, loading: true });
-  
-    markViewed(topicName);
-    try {
-      const res = await axios.get(`${API}/topic-detail/${encodeURIComponent(selectedTrack?.name)}/${encodeURIComponent(topicName)}`);
-      setDrawer({ topic: topicName, ...res.data, loading: false });
-    } catch (e) {
-      setDrawer({ topic: topicName, loading: false, error: true });
-    }
-    
-  };
+  // ---------------- TOPIC DETAIL DRAWER (fully premium, zero free views) ----------------
+ const openTopicDrawer = async (topicName) => {
+  setDrawer({ topic: topicName, loading: true });
 
+  markViewed(topicName);
+
+  try {
+    const res = await axios.get(
+      `${API}/topic-detail/${encodeURIComponent(selectedTrack?.name)}/${encodeURIComponent(topicName)}`
+    );
+
+    setDrawer({
+      topic: topicName,
+      ...res.data,
+      loading: false
+    });
+  } catch (e) {
+    setDrawer({
+      topic: topicName,
+      loading: false,
+      error: true
+    });
+  }
+};
+
+  // ---------------- TAB SWITCHING — roadmap & notes are always free ----------------
   const switchTab = (tabId) => {
-    if ((tabId === 'quiz' || tabId === 'daily') && !premium) {
-      openPaywall(tabId === 'quiz' ? 'Mock tests' : 'Daily current affairs updates');
-      return;
-    }
     setActiveTab(tabId);
     if (tabId === 'quiz') { setQuizSetup(true); setData(null); return; }
+    if (tabId === 'daily') { openDailyUpdate(); return; }
     fetchContent(tabId);
+  };
+
+  // ---------------- DAILY UPDATE (1 free lifetime view, then paywall) ----------------
+  const openDailyUpdate = () => {
+    requireAccount(async () => {
+      const phone = account?.phone;
+      if (!phone) return;
+      setLoading(true);
+      try {
+        const gate = await axios.post(`${API}/consume-daily-trial`, { phone });
+        if (!gate.data.allowed) {
+          setLoading(false);
+          openPaywall('Daily current affairs updates');
+          return;
+        }
+        const updated = { ...account, dailyUpdateTrialUsed: true };
+        setAccount(updated);
+        setAccountLS(updated);
+        await fetchContent('daily');
+      } catch (e) {
+        setLoading(false);
+        alert('Error: ' + (e.response?.data?.detail || e.message));
+      }
+    });
   };
 
   const getScore = () => !data?.questions ? 0 : data.questions.filter(q => quizAnswers[q.id] === q.correct).length;
@@ -354,7 +520,49 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
     return scores;
   };
 
-  
+  // ---------------- FEEDBACK ----------------
+  const submitFeedback = async () => {
+    setFeedbackError('');
+    if (feedbackRating < 1) {
+      setFeedbackError('Pick a star rating first.');
+      return;
+    }
+    setFeedbackLoading(true);
+    try {
+      await axios.post(`${API}/feedback`, {
+        phone: account?.phone || null,
+        rating: feedbackRating,
+        comment: feedbackComment.trim() || null,
+      });
+      setFeedbackDone(true);
+    } catch (e) {
+      setFeedbackError(e.response?.data?.detail || 'Could not submit feedback. Try again.');
+    }
+    setFeedbackLoading(false);
+  };
+
+  const closeFeedback = () => {
+    setShowFeedback(false);
+    setFeedbackDone(false);
+    setFeedbackRating(0);
+    setFeedbackComment('');
+    setFeedbackError('');
+  };
+
+  const AccountIndicator = () => (
+    account?.phone ? (
+      <div style={s.accountWrap}>
+        <div style={s.accountBadge}>
+          <User size={12} />
+          {account.phone.slice(0, 5)}••••{account.phone.slice(-1)}
+          {account.isPremium ? ` · Premium (${daysLeft(account.premiumExpiry)}d)` : ' · Free'}
+        </div>
+        <button style={s.logoutBtn} onClick={logout} title="Log out"><LogOut size={13} /></button>
+      </div>
+    ) : (
+      <button style={s.loginBtn} onClick={() => openAuth('signup')}>Log in</button>
+    )
+  );
 
   // ---------------- HOME ----------------
   if (screen === 'home') {
@@ -363,13 +571,19 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
       <div style={s.app}>
         <nav style={s.nav}>
           <div style={s.logo}>GenZ <span style={{ color: C.teal }}>Vidyalaya</span></div>
-          <button style={s.langToggle} onClick={() => setLang(l => l === 'en' ? 'hi' : 'en')}>
-            {lang === 'en' ? 'हिं' : 'EN'}
-          </button>
+          <div style={s.navRight}>
+            <button style={s.feedbackNavBtn} onClick={() => setShowFeedback(true)}>
+              <MessageSquare size={13} /> Feedback
+            </button>
+            <AccountIndicator />
+            <button style={s.langToggle} onClick={() => setLang(l => l === 'en' ? 'hi' : 'en')}>
+              {lang === 'en' ? 'हिं' : 'EN'}
+            </button>
+          </div>
         </nav>
 
         <div style={s.hero}>
-          <div style={s.eyebrow}><span style={s.eyebrowDot} />{lang === 'en' ? 'Free forever · no login required' : 'हमेशा मुफ्त · लॉगिन ज़रूरी नहीं'}</div>
+          <div style={s.eyebrow}><span style={s.eyebrowDot} />{lang === 'en' ? 'Roadmaps & notes free · no login required' : 'रोडमैप और नोट्स मुफ्त · लॉगिन ज़रूरी नहीं'}</div>
           <h1 style={s.h1}>{lang === 'en' ? 'Study for your exam like it\'s an answer sheet, not a syllabus PDF' : 'अपनी परीक्षा की तैयारी उत्तर पत्रक की तरह करें'}</h1>
           <p style={s.heroP}>{lang === 'en'
             ? 'AI-built roadmaps, notes, mock tests and daily current affairs for every major Indian competitive exam — in English and Hindi.'
@@ -417,7 +631,10 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
             })}
           </div>
         </div>
-        <div style={s.footer}>genz vidyalaya · built for students who can't afford ₹1,00,000 coaching</div>
+        <div style={s.footer}>genz vidyalaya · built for students who can't afford Rs.1,00,000 coaching</div>
+
+        {AuthModal()}
+        <FeedbackModal />
       </div>
     );
   }
@@ -434,9 +651,8 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
           <span style={s.studyTitle}>{selectedTrack?.name}</span>
         </div>
         <div style={s.headerRight}>
-          {premium ? (
-            <div style={s.premiumBadge}>Premium · {daysLeft(premium.expiry)}d left</div>
-          ) : (
+          <AccountIndicator />
+          {!account?.isPremium && (
             <button style={s.upgradeBtn} onClick={() => openPaywall('Premium features')}>Upgrade</button>
           )}
           <div style={s.studyTimer}><Clock size={13} /> {formatTime(studyTime)}</div>
@@ -470,6 +686,9 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
           {activeTab === 'quiz' && quizSetup && !loading && (
             <div style={s.quizSetup}>
               <h2 style={s.title}>{selectedTrack?.name} — mock test setup</h2>
+              {account?.phone && !account.isPremium && (
+                <p style={s.freeCountNote}>{Math.max(0, account.mockTestsRemainingToday ?? 5)} free mock test{(account.mockTestsRemainingToday ?? 5) === 1 ? '' : 's'} left today</p>
+              )}
               <div style={s.setupCard}>
                 <p style={s.label}>Number of questions</p>
                 <div style={s.setupRow}>
@@ -507,7 +726,7 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
             </div>
           )}
 
-          {/* ROADMAP — OMR bubble ledger */}
+          {/* ROADMAP — free, unlimited. Topic-detail drawer inside it is the paid part. */}
           {data && activeTab === 'roadmap' && (
             <div>
               <h2 style={s.title}>{data.topic} — {lang === 'en' ? 'roadmap' : 'रोडमैप'}</h2>
@@ -547,6 +766,7 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
                               onMouseLeave={e => e.currentTarget.style.borderColor = C.hairline}>
                               <div style={s.nodeTop}>
                                 <span style={s.nodeName}>{topicName}</span>
+
                               </div>
                               {topicDesc && <p style={s.nodeSub}>{topicDesc}</p>}
                               {subtopics?.length > 0 && (
@@ -575,7 +795,7 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
             </div>
           )}
 
-          {/* NOTES */}
+          {/* NOTES — always free */}
           {data && activeTab === 'notes' && (
             <div>
               <h2 style={s.title}>{data.topic} — {lang === 'en' ? 'study notes' : 'स्टडी नोट्स'}</h2>
@@ -702,7 +922,7 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
       )}
     </div>
   ))}
-                       
+
 
          {!quizSubmitted && quizQuestions.length > 0 && (
   <div style={{ marginTop: '20px' }}>
@@ -908,16 +1128,126 @@ const [quizTotalBatches, setQuizTotalBatches] = useState(0);
           </div>
         </div>
       )}
+
+      {AuthModal()}
+      <FeedbackModal />
     </div>
   );
+
+  // ---------------- AUTH MODAL ----------------
+  function AuthModal() {
+    if (!showAuth) return null;
+    return (
+      <div style={s.paywallOverlay} onClick={() => setShowAuth(false)}>
+        <div style={s.paywallCard} onClick={(e) => e.stopPropagation()}>
+          <button style={s.closeBtn} onClick={() => setShowAuth(false)}><X size={15} /></button>
+          <div style={s.eyebrow}><span style={s.eyebrowDot} />{authMode === 'signup' ? 'Create your account' : 'Log in'}</div>
+          <h3 style={s.paywallTitle}>{authMode === 'signup' ? 'Sign up with phone + MPIN' : 'Log in to your account'}</h3>
+          <p style={s.paywallSub}>Free to create. This is how we save your premium status, free mock test count, and daily update trial across devices.</p>
+
+          <div style={s.authFieldWrap}>
+            <label style={s.label}>Phone number</label>
+            <input
+              style={s.authInput}
+              type="tel"
+              placeholder="10-digit mobile number"
+              value={authPhone}
+              onChange={(e) => setAuthPhone(e.target.value)}
+              maxLength={10}
+            />
+          </div>
+          <div style={s.authFieldWrap}>
+            <label style={s.label}>MPIN</label>
+            <input
+              style={s.authInput}
+              type="password"
+              placeholder="4-6 digit MPIN"
+              value={authMpin}
+              onChange={(e) => setAuthMpin(e.target.value)}
+              maxLength={6}
+            />
+          </div>
+
+          {authError && <p style={s.authError}>{authError}</p>}
+
+          <button style={{ ...s.primaryBtn, background: C.teal, opacity: authLoading ? 0.6 : 1 }} onClick={submitAuth} disabled={authLoading}>
+            {authLoading ? 'Please wait…' : authMode === 'signup' ? 'Sign up' : 'Log in'}
+          </button>
+
+          <p style={s.authToggle}>
+            {authMode === 'signup' ? 'Already have an account?' : "Don't have an account?"}{' '}
+            <span
+              style={{ color: C.teal, cursor: 'pointer' }}
+              onClick={() => { setAuthMode(authMode === 'signup' ? 'login' : 'signup'); setAuthError(''); }}
+            >
+              {authMode === 'signup' ? 'Log in' : 'Sign up'}
+            </span>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------- FEEDBACK MODAL ----------------
+  function FeedbackModal() {
+    if (!showFeedback) return null;
+    return (
+      <div style={s.paywallOverlay} onClick={closeFeedback}>
+        <div style={s.paywallCard} onClick={(e) => e.stopPropagation()}>
+          <button style={s.closeBtn} onClick={closeFeedback}><X size={15} /></button>
+          <div style={s.eyebrow}><span style={s.eyebrowDot} />Feedback</div>
+          <h3 style={s.paywallTitle}>{feedbackDone ? 'Thanks for the feedback!' : 'How is GenZ Vidyalaya working for you?'}</h3>
+
+          {feedbackDone ? (
+            <p style={s.paywallSub}>Your review helps us improve. You can close this now.</p>
+          ) : (
+            <>
+              <div style={s.starRow}>
+                {[1, 2, 3, 4, 5].map(n => (
+                  <Star
+                    key={n}
+                    size={26}
+                    style={{ cursor: 'pointer' }}
+                    color={n <= feedbackRating ? C.brass : C.hairline}
+                    fill={n <= feedbackRating ? C.brass : 'none'}
+                    onClick={() => setFeedbackRating(n)}
+                  />
+                ))}
+              </div>
+              <textarea
+                style={s.feedbackTextarea}
+                placeholder="Anything specific? (optional)"
+                value={feedbackComment}
+                onChange={(e) => setFeedbackComment(e.target.value)}
+                maxLength={1000}
+                rows={4}
+              />
+              {feedbackError && <p style={s.authError}>{feedbackError}</p>}
+              <button style={{ ...s.primaryBtn, background: C.brass, opacity: feedbackLoading ? 0.6 : 1 }} onClick={submitFeedback} disabled={feedbackLoading}>
+                {feedbackLoading ? 'Submitting…' : 'Submit feedback'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 }
 
 const s = {
   app: { minHeight: '100vh', background: C.ink, color: C.chalk, fontFamily: "'IBM Plex Sans', sans-serif" },
 
   nav: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 28px', borderBottom: `1px solid ${C.hairline}` },
+  navRight: { display: 'flex', alignItems: 'center', gap: '10px' },
   logo: { fontFamily: "'IBM Plex Serif', serif", fontWeight: 500, fontSize: '19px' },
   langToggle: { padding: '6px 14px', background: 'transparent', border: `1px solid ${C.hairline}`, borderRadius: '16px', color: C.chalkDim, cursor: 'pointer', fontSize: '12px', fontFamily: "'IBM Plex Mono', monospace" },
+
+  feedbackNavBtn: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'transparent', border: `1px solid ${C.hairline}`, borderRadius: '16px', color: C.chalkDim, cursor: 'pointer', fontSize: '12px' },
+
+  accountWrap: { display: 'flex', alignItems: 'center', gap: '6px' },
+  accountBadge: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: C.chalkDim, background: C.surface2, border: `1px solid ${C.hairline}`, padding: '5px 10px', borderRadius: '14px', fontFamily: "'IBM Plex Mono', monospace" },
+  logoutBtn: { background: 'transparent', border: `1px solid ${C.hairline}`, color: C.slate, width: '26px', height: '26px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  loginBtn: { padding: '6px 14px', background: C.teal, border: 'none', borderRadius: '16px', color: C.ink, cursor: 'pointer', fontSize: '12px', fontWeight: 500 },
 
   hero: { padding: '48px 28px 36px', borderBottom: `1px solid ${C.hairline}`, maxWidth: '760px' },
   eyebrow: { fontFamily: "'IBM Plex Mono', monospace", fontSize: '12px', color: C.brass, letterSpacing: '0.04em', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' },
@@ -948,6 +1278,9 @@ const s = {
   premiumBadge: { fontSize: '11.5px', color: C.teal, fontFamily: "'IBM Plex Mono', monospace", background: C.tealDim + '33', border: `1px solid ${C.teal}55`, padding: '5px 10px', borderRadius: '6px' },
   upgradeBtn: { fontSize: '12px', color: C.ink, background: C.brass, border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 500 },
 
+  freeCountNote: { fontSize: '12.5px', color: C.brass, marginBottom: '14px', fontFamily: "'IBM Plex Mono', monospace" },
+  premiumTag: { fontSize: '10px', color: C.brass, border: `1px solid ${C.brass}55`, padding: '2px 7px', borderRadius: '9px', fontFamily: "'IBM Plex Mono', monospace" },
+
   paywallOverlay: { position: 'fixed', inset: 0, background: 'rgba(8,10,14,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: '20px' },
   paywallCard: { background: C.surface, border: `1px solid ${C.hairline}`, borderRadius: '14px', padding: '32px', maxWidth: '520px', width: '100%', position: 'relative' },
   paywallTitle: { fontFamily: "'IBM Plex Serif', serif", fontSize: '20px', fontWeight: 500, marginBottom: '10px', marginTop: '6px' },
@@ -960,6 +1293,14 @@ const s = {
   planDuration: { fontSize: '11px', color: C.slate, marginTop: '2px', marginBottom: '12px' },
   planCta: { fontSize: '12px', color: C.teal, fontWeight: 500 },
   paywallFoot: { fontSize: '11px', color: C.slate, marginTop: '18px', textAlign: 'center' },
+
+  authFieldWrap: { marginBottom: '16px' },
+  authInput: { width: '100%', padding: '11px 14px', background: C.ink, border: `1px solid ${C.hairline}`, borderRadius: '8px', color: C.chalk, fontSize: '14px', marginTop: '6px', boxSizing: 'border-box' },
+  authError: { fontSize: '12.5px', color: C.red, marginBottom: '12px' },
+  authToggle: { fontSize: '12.5px', color: C.slate, textAlign: 'center', marginTop: '16px' },
+
+  starRow: { display: 'flex', gap: '8px', marginBottom: '18px' },
+  feedbackTextarea: { width: '100%', padding: '12px 14px', background: C.ink, border: `1px solid ${C.hairline}`, borderRadius: '8px', color: C.chalk, fontSize: '13.5px', marginBottom: '16px', boxSizing: 'border-box', fontFamily: "'IBM Plex Sans', sans-serif", resize: 'vertical' },
 
   tabs: { display: 'flex', padding: '0 24px', borderBottom: `1px solid ${C.hairline}`, background: C.ink },
   tab: { padding: '12px 16px', background: 'transparent', border: 'none', color: C.slate, cursor: 'pointer', fontSize: '13.5px', borderBottom: '2px solid transparent' },
