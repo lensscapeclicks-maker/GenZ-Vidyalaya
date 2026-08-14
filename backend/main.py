@@ -9,6 +9,7 @@ import json
 import re
 import razorpay
 import bcrypt
+import time
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo
 from supabase import create_client, Client
@@ -97,10 +98,14 @@ def clean_json(text):
 
 
 _CACHE_PREFIX = "v2"
+
+# Fast in-process L1 cache.
+# Supabase remains the persistent L2 cache.
+_MEMORY_CACHE: dict[str, dict] = {}
+_MEMORY_CACHE_MAX = 500
+
 _CACHE_LOCKS: dict[str, asyncio.Lock] = {}
 _CACHE_LOCKS_GUARD = asyncio.Lock()
-
-
 async def _get_cache_lock(cache_key: str) -> asyncio.Lock:
     async with _CACHE_LOCKS_GUARD:
         lock = _CACHE_LOCKS.get(cache_key)
@@ -111,8 +116,18 @@ async def _get_cache_lock(cache_key: str) -> asyncio.Lock:
 
 
 def cache_get(cache_key: str):
+    # L1: process memory — fastest path
+    memory_item = _MEMORY_CACHE.get(cache_key)
+    if memory_item is not None:
+        expires_at = memory_item.get("expires_at")
+        if expires_at is None or expires_at > datetime.now(timezone.utc):
+            return memory_item["content"]
+        _MEMORY_CACHE.pop(cache_key, None)
+
+    # L2: Supabase persistent cache
     if not supabase:
         return None
+
     try:
         res = (
             supabase.table("content_cache")
@@ -124,25 +139,50 @@ def cache_get(cache_key: str):
         rows = res.data or []
         if not rows:
             return None
+
         row = rows[0]
         expires_at = row.get("expires_at")
+
+        expiry = None
         if expires_at:
             try:
-                expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                expiry = datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00")
+                )
                 if expiry <= datetime.now(timezone.utc):
                     return None
             except Exception:
                 return None
+
+        # Promote L2 → L1
+        _MEMORY_CACHE[cache_key] = {
+            "content": row.get("content"),
+            "expires_at": expiry,
+        }
+
         return row.get("content")
+
     except Exception:
-        # Missing table, network hiccup, etc — a cache miss must never break
-        # a real response. Just fall through to a fresh generation.
+        # Cache failure must never break a real response.
         return None
+   
 
 
 def cache_put(cache_key: str, content: dict, expires_at: datetime | None = None):
+    # L1: immediately available in RAM
+    if len(_MEMORY_CACHE) >= _MEMORY_CACHE_MAX:
+        oldest_key = next(iter(_MEMORY_CACHE))
+        _MEMORY_CACHE.pop(oldest_key, None)
+
+    _MEMORY_CACHE[cache_key] = {
+        "content": content,
+        "expires_at": expires_at,
+    }
+
+    # L2: persistent Supabase cache
     if not supabase:
         return
+
     try:
         row = {
             "cache_key": cache_key,
@@ -150,38 +190,46 @@ def cache_put(cache_key: str, content: dict, expires_at: datetime | None = None)
             "created_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": expires_at.isoformat() if expires_at else None,
         }
-        supabase.table("content_cache").upsert(row, on_conflict="cache_key").execute()
-    except Exception:
-        # Caching is an optimization; a cache write must never break a successful response.
-        pass
 
+        supabase.table("content_cache").upsert(
+            row,
+            on_conflict="cache_key"
+        ).execute()
+
+    except Exception:
+        # L1 cache already succeeded.
+        # Supabase write failure must not break the response.
+        pass
 
 async def _generate_json(prompt: str) -> dict:
     """Calls Gemini once, in strict JSON mode, with one automatic repair
     pass if the model's output isn't valid JSON. Shared by both the cached
     and non-cached generation paths below."""
+    start_time = time.perf_counter()
     response = await client.aio.models.generate_content(
-        model="gemini-2.5-flash",
+       model="gemini-2.5-flash-lite",
         contents=prompt,
         config=types.GenerateContentConfig(
-            response_mime_type="application/json",
+          response_mime_type="application/json",
             temperature=0.2,
         ),
     )
+    print(f"GEMINI GENERATION: {time.perf_counter() - start_time:.2f}s")
     text = clean_json(response.text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         repair_response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+           model="gemini-2.5-flash-lite",
             contents=(
                 "Return ONLY valid JSON. Repair this JSON without changing its meaning. "
                 "Do not add markdown, explanations, or extra keys.\n\n" + text
             ),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0,
-            ),
+           config=types.GenerateContentConfig(
+    response_mime_type="application/json",
+    temperature=0.2,
+    thinking_config=types.ThinkingConfig(thinking_budget=0),
+),
         )
         return json.loads(clean_json(repair_response.text))
 
@@ -643,7 +691,10 @@ Rules:
 - All questions must be unique
 - Mix different sub-topics evenly
 - Each question has exactly 4 options labeled A) B) C) D)
-- Explanations must be educational
+- Explanations must be educational, concise, and point-by-point.
+- Give 3-5 short points explaining the reasoning.
+- Include the key formula or concept when relevant.
+- Avoid long paragraphs or unnecessary background.
 
 Format as JSON:
 {{
