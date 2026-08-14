@@ -343,15 +343,18 @@ export default function App() {
       setQuizAnswers({});
       setQuizSubmitted(false);
       setQuizBatch(0);
-      setQuizTotalBatches(Math.ceil(quizConfig.count / 10));
+     const isPremium = consumeRes.data.is_premium;
+const requestedCount = isPremium ? quizConfig.count : 5;
 
-    const res = await axios.post(
-  `${API}/quiz/${encodeURIComponent(t)}?num_questions=${quizConfig.count}&difficulty=${quizConfig.difficulty}&exam_id=${selectedTrack.id}&phone=${encodeURIComponent(phone)}`
+setQuizTotalBatches(Math.ceil(requestedCount / 10));
+
+const res = await axios.post(
+  `${API}/quiz/${encodeURIComponent(t)}?num_questions=${requestedCount}&difficulty=${quizConfig.difficulty}&exam_id=${selectedTrack.id}&phone=${encodeURIComponent(phone)}`
 );
       setData(res.data);
       setQuizQuestions(res.data.questions || []);
       setQuizSetup(false);
-      setTimeLeft(quizConfig.count * 72);
+     setTimeLeft(requestedCount * 72);
       setTimerActive(true);
     } catch (e) {
       alert('Error: ' + (e.response?.data?.detail || e.message));
