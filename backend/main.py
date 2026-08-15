@@ -73,6 +73,7 @@ class VerifyRequest(BaseModel):
 class SignupRequest(BaseModel):
     phone: str
     mpin: str
+    full_name: str
 
 class LoginRequest(BaseModel):
     phone: str
@@ -305,6 +306,7 @@ def compute_status(user: dict) -> dict:
 
     return {
         "phone": user["phone"],
+        "full_name": user.get("full_name") or "",
         "is_premium": is_premium,
         "premium_expiry": user.get("premium_expiry"),
         "mock_tests_remaining_today": remaining,
@@ -335,13 +337,11 @@ async def signup(req: SignupRequest):
                 status_code=400,
                 detail="This phone number is already registered — try logging in instead"
             )
-
-        row = {
+        row = {          
             "phone": phone,
+            "full_name": req.full_name.strip(),
             "mpin_hash": hash_mpin(req.mpin),
             "is_premium": False,
-            "mock_tests_used_today": 0,
-            "daily_update_trial_used": False,
         }
 
         print("SIGNUP INSERT:", row)

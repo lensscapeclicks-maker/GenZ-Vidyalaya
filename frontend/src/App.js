@@ -6,7 +6,7 @@ import {
   Video, Image as ImageIcon, Camera, Aperture, Code, Globe, LineChart,
   Palette, TrendingUp, PiggyBank, Smartphone, Laptop,
   ArrowLeft, Clock, X, ExternalLink, FileText, GraduationCap,
-  ChevronDown, ChevronUp, PlayCircle, User, LogOut, Star, MessageSquare,
+  ChevronDown, ChevronUp, PlayCircle, LogOut, Star, MessageSquare,
 } from 'lucide-react';
 import './App.css';
 
@@ -102,6 +102,7 @@ function accountFromStatus(status) {
   // Maps the FastAPI compute_status() response shape onto our frontend account shape.
   return {
     phone: status.phone,
+      fullName: status.full_name || '',
     isPremium: !!status.is_premium,
     premiumExpiry: status.premium_expiry || null,
     mockTestsRemainingToday: status.mock_tests_remaining_today ?? null,
@@ -161,9 +162,11 @@ export default function App() {
 
   // ---- account / auth state ----
   const [account, setAccount] = useState(getAccount());
+  const [showAccountDetails, setShowAccountDetails] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('signup'); // 'signup' | 'login'
   const [authPhone, setAuthPhone] = useState('');
+  const [authFullName, setAuthFullName] = useState('');
   const [authMpin, setAuthMpin] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -263,6 +266,7 @@ export default function App() {
     setAuthMode(mode);
     setAuthError('');
     setAuthPhone('');
+    setAuthFullName('');
     setAuthMpin('');
     setPendingAction(() => afterSuccess || null);
     setShowAuth(true);
@@ -280,6 +284,10 @@ export default function App() {
 
   const submitAuth = async () => {
     setAuthError('');
+    if (authMode === 'signup' && !authFullName.trim()) {
+  setAuthError('Please enter your full name.');
+  return;
+}
     const phoneDigits = authPhone.replace(/\D/g, '');
     if (!/^[6-9]\d{9}$/.test(phoneDigits)) {
       setAuthError('Enter a valid 10-digit Indian phone number.');
@@ -292,12 +300,17 @@ export default function App() {
     setAuthLoading(true);
     try {
       const endpoint = authMode === 'signup' ? '/signup' : '/login';
-      const res = await axios.post(`${API}${endpoint}`, { phone: phoneDigits, mpin: authMpin });
+     const res = await axios.post(`${API}${endpoint}`, {
+  phone: phoneDigits,
+  mpin: authMpin,
+  ...(authMode === 'signup' ? { full_name: authFullName.trim() } : {}),
+});
       const acc = accountFromStatus(res.data);
       setAccount(acc);
       setAccountLS(acc);
       setShowAuth(false);
       setAuthPhone('');
+      setAuthFullName('');
       setAuthMpin('');
       const action = pendingAction;
       setPendingAction(null);
@@ -552,21 +565,55 @@ const res = await axios.post(
     setFeedbackError('');
   };
 
-  const AccountIndicator = () => (
-    account?.phone ? (
-      <div style={s.accountWrap}>
-        <div style={s.accountBadge}>
-          <User size={12} />
-          {account.phone.slice(0, 5)}••••{account.phone.slice(-1)}
-          {account.isPremium ? ` · Premium (${daysLeft(account.premiumExpiry)}d)` : ' · Free'}
-        </div>
-        <button style={s.logoutBtn} onClick={logout} title="Log out"><LogOut size={13} /></button>
-      </div>
-    ) : (
-      <button style={s.loginBtn} onClick={() => openAuth('signup')}>Log in</button>
-    )
-  );
 
+
+const AccountIndicator = () => (
+  account?.phone ? (
+    <div style={s.accountWrap}>
+      <button
+        style={s.accountInitial}
+        onClick={() => setShowAccountDetails(v => !v)}
+        title="Account"
+      >
+        {(account.fullName || 'Student').trim().charAt(0).toUpperCase()}
+      </button>
+
+      {showAccountDetails && (
+        <div style={s.accountDetails}>
+          <div style={s.accountDetailsName}>
+            {account.fullName || 'Student'}
+          </div>
+
+          <div style={s.accountDetailsPhone}>
+            {account.phone.slice(0, 2)}••••••{account.phone.slice(-2)}
+          </div>
+
+          <div style={s.accountDetailsPlan}>
+            {account.isPremium
+              ? `Premium · ${daysLeft(account.premiumExpiry)} days`
+              : 'Free'}
+          </div>
+
+          <button
+            style={s.logoutBtn}
+            onClick={logout}
+            title="Log out"
+          >
+            <LogOut size={13} />
+            <span>Log out</span>
+          </button>
+        </div>
+      )}
+    </div>
+  ) : (
+    <button
+      style={s.loginBtn}
+      onClick={() => openAuth('signup')}
+    >
+      Log in
+    </button>
+  )
+);
   // ---------------- HOME ----------------
   if (screen === 'home') {
     const totalCleared = EXAM_TRACKS.concat(SKILL_TRACKS).reduce((sum, t) => sum + loadProgress(t.id).cleared.length, 0);
@@ -1171,6 +1218,18 @@ const res = await axios.post(
           <p style={s.paywallSub}>Free to create. This is how we save your premium status, free mock test count, and daily update trial across devices.</p>
 
           <div style={s.authFieldWrap}>
+          {authMode === 'signup' && (
+  <div style={s.authFieldWrap}>
+    <label style={s.label}>Full name</label>
+    <input
+      style={s.authInput}
+      type="text"
+      placeholder="Enter your full name"
+      value={authFullName}
+      onChange={(e) => setAuthFullName(e.target.value)}
+    />
+  </div>
+)}
             <label style={s.label}>Phone number</label>
             <input
               style={s.authInput}
@@ -1307,8 +1366,59 @@ const s = {
 
   feedbackNavBtn: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'transparent', border: `1px solid ${C.hairline}`, borderRadius: '16px', color: C.chalkDim, cursor: 'pointer', fontSize: '12px' },
 
-  accountWrap: { display: 'flex', alignItems: 'center', gap: '6px' },
-  accountBadge: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: C.chalkDim, background: C.surface2, border: `1px solid ${C.hairline}`, padding: '5px 10px', borderRadius: '14px', fontFamily: "'IBM Plex Mono', monospace" },
+  accountWrap: {
+  position: 'relative',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+},
+  accountInitial: {
+  width: '32px',
+  height: '32px',
+  borderRadius: '50%',
+  border: `1px solid ${C.hairline}`,
+  background: C.surface2,
+  color: C.chalk,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: '13px',
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: "'IBM Plex Sans', sans-serif",
+},
+accountDetails: {
+  position: 'absolute',
+  top: '42px',
+  right: 0,
+  minWidth: '210px',
+  padding: '14px',
+  background: C.surface,
+  border: `1px solid ${C.hairline}`,
+  borderRadius: '10px',
+  boxShadow: '0 12px 30px rgba(0,0,0,0.25)',
+  zIndex: 200,
+},
+
+accountDetailsName: {
+  fontSize: '14px',
+  fontWeight: 600,
+  color: C.chalk,
+  marginBottom: '6px',
+},
+
+accountDetailsPhone: {
+  fontSize: '12px',
+  color: C.slate,
+  fontFamily: "'IBM Plex Mono', monospace",
+  marginBottom: '8px',
+},
+
+accountDetailsPlan: {
+  fontSize: '12px',
+  color: C.teal,
+  marginBottom: '12px',
+},
   logoutBtn: { background: 'transparent', border: `1px solid ${C.hairline}`, color: C.slate, width: '26px', height: '26px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   loginBtn: { padding: '6px 14px', background: C.teal, border: 'none', borderRadius: '16px', color: C.ink, cursor: 'pointer', fontSize: '12px', fontWeight: 500 },
 
