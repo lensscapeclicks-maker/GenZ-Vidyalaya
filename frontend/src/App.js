@@ -637,7 +637,18 @@ const res = await axios.post(
         <div style={s.footer}>genz vidyalaya · built for students who can't afford Rs.1,00,000 coaching</div>
 
         {AuthModal()}
-        <FeedbackModal />
+       <FeedbackModal
+  showFeedback={showFeedback}
+  closeFeedback={closeFeedback}
+  feedbackDone={feedbackDone}
+  feedbackRating={feedbackRating}
+  setFeedbackRating={setFeedbackRating}
+  feedbackComment={feedbackComment}
+  setFeedbackComment={setFeedbackComment}
+  feedbackError={feedbackError}
+  feedbackLoading={feedbackLoading}
+  submitFeedback={submitFeedback}
+/>
       </div>
     );
   }
@@ -1133,7 +1144,18 @@ const res = await axios.post(
       )}
 
       {AuthModal()}
-      <FeedbackModal />
+      <FeedbackModal
+  showFeedback={showFeedback}
+  closeFeedback={closeFeedback}
+  feedbackDone={feedbackDone}
+  feedbackRating={feedbackRating}
+  setFeedbackRating={setFeedbackRating}
+  feedbackComment={feedbackComment}
+  setFeedbackComment={setFeedbackComment}
+  feedbackError={feedbackError}
+  feedbackLoading={feedbackLoading}
+  submitFeedback={submitFeedback}
+/>
     </div>
   );
 
@@ -1190,51 +1212,89 @@ const res = await axios.post(
       </div>
     );
   }
+}
 
-  // ---------------- FEEDBACK MODAL ----------------
-  function FeedbackModal() {
-    if (!showFeedback) return null;
-    return (
-      <div style={s.paywallOverlay} onClick={closeFeedback}>
-        <div style={s.paywallCard} onClick={(e) => e.stopPropagation()}>
-          <button style={s.closeBtn} onClick={closeFeedback}><X size={15} /></button>
-          <div style={s.eyebrow}><span style={s.eyebrowDot} />Feedback</div>
-          <h3 style={s.paywallTitle}>{feedbackDone ? 'Thanks for the feedback!' : 'How is GenZ Vidyalaya working for you?'}</h3>
+// ---------------- FEEDBACK MODAL ----------------
+function FeedbackModal({
+  showFeedback,
+  closeFeedback,
+  feedbackDone,
+  feedbackRating,
+  setFeedbackRating,
+  feedbackComment,
+  setFeedbackComment,
+  feedbackError,
+  feedbackLoading,
+  submitFeedback,
+}) {
+  if (!showFeedback) return null;
 
-          {feedbackDone ? (
-            <p style={s.paywallSub}>Your review helps us improve. You can close this now.</p>
-          ) : (
-            <>
-              <div style={s.starRow}>
-                {[1, 2, 3, 4, 5].map(n => (
-                  <Star
-                    key={n}
-                    size={26}
-                    style={{ cursor: 'pointer' }}
-                    color={n <= feedbackRating ? C.brass : C.hairline}
-                    fill={n <= feedbackRating ? C.brass : 'none'}
-                    onClick={() => setFeedbackRating(n)}
-                  />
-                ))}
-              </div>
-              <textarea
-                style={s.feedbackTextarea}
-                placeholder="Anything specific? (optional)"
-                value={feedbackComment}
-                onChange={(e) => setFeedbackComment(e.target.value)}
-                maxLength={1000}
-                rows={4}
-              />
-              {feedbackError && <p style={s.authError}>{feedbackError}</p>}
-              <button style={{ ...s.primaryBtn, background: C.brass, opacity: feedbackLoading ? 0.6 : 1 }} onClick={submitFeedback} disabled={feedbackLoading}>
-                {feedbackLoading ? 'Submitting…' : 'Submit feedback'}
-              </button>
-            </>
-          )}
+  return (
+    <div style={s.paywallOverlay} onClick={closeFeedback}>
+      <div style={s.paywallCard} onClick={(e) => e.stopPropagation()}>
+        <button style={s.closeBtn} onClick={closeFeedback}>
+          <X size={15} />
+        </button>
+
+        <div style={s.eyebrow}>
+          <span style={s.eyebrowDot} />
+          Feedback
         </div>
+
+        <h3 style={s.paywallTitle}>
+          {feedbackDone
+            ? 'Thanks for the feedback!'
+            : 'How is GenZ Vidyalaya working for you?'}
+        </h3>
+
+        {feedbackDone ? (
+          <p style={s.paywallSub}>
+            Your review helps us improve. You can close this now.
+          </p>
+        ) : (
+          <>
+            <div style={s.starRow}>
+              {[1, 2, 3, 4, 5].map(n => (
+                <Star
+                  key={n}
+                  size={26}
+                  style={{ cursor: 'pointer' }}
+                  color={n <= feedbackRating ? C.brass : C.hairline}
+                  fill={n <= feedbackRating ? C.brass : 'none'}
+                  onClick={() => setFeedbackRating(n)}
+                />
+              ))}
+            </div>
+
+            <textarea
+              style={s.feedbackTextarea}
+              placeholder="Anything specific? (optional)"
+              value={feedbackComment}
+              onChange={(e) => setFeedbackComment(e.target.value)}
+              maxLength={1000}
+              rows={4}
+            />
+
+            {feedbackError && (
+              <p style={s.authError}>{feedbackError}</p>
+            )}
+
+            <button
+              style={{
+                ...s.primaryBtn,
+                background: C.brass,
+                opacity: feedbackLoading ? 0.6 : 1,
+              }}
+              onClick={submitFeedback}
+              disabled={feedbackLoading}
+            >
+              {feedbackLoading ? 'Submitting…' : 'Submit feedback'}
+            </button>
+          </>
+        )}
       </div>
-    );
-  }
+    </div>
+  );
 }
 
 const s = {
