@@ -163,6 +163,9 @@ export default function App() {
   // ---- account / auth state ----
   const [account, setAccount] = useState(getAccount());
   const [showAccountDetails, setShowAccountDetails] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+const [editName, setEditName] = useState('');
+const [nameSaving, setNameSaving] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState('signup'); // 'signup' | 'login'
   const [authPhone, setAuthPhone] = useState('');
@@ -556,7 +559,33 @@ const res = await axios.post(
     }
     setFeedbackLoading(false);
   };
+  const saveName = async () => {
+  const name = editName.trim();
 
+  if (name.length < 2) {
+    setAuthError('Please enter your full name.');
+    return;
+  }
+
+  setNameSaving(true);
+
+  try {
+    const res = await axios.post(`${API}/update-name`, {
+      phone: account.phone,
+      full_name: name,
+    });
+
+    const fresh = accountFromStatus(res.data);
+    setAccount(fresh);
+    setAccountLS(fresh);
+    setEditingName(false);
+    setEditName('');
+  } catch (e) {
+    alert(e.response?.data?.detail || 'Could not save your name. Try again.');
+  } finally {
+    setNameSaving(false);
+  }
+};
   const closeFeedback = () => {
     setShowFeedback(false);
     setFeedbackDone(false);
@@ -583,6 +612,36 @@ const AccountIndicator = () => (
           <div style={s.accountDetailsName}>
             {account.fullName || 'Student'}
           </div>
+          {editingName ? (
+  <div style={{ marginBottom: '12px' }}>
+    <input
+      style={s.authInput}
+      type="text"
+      placeholder="Enter your full name"
+      value={editName}
+      onChange={(e) => setEditName(e.target.value)}
+      autoFocus
+    />
+
+    <button
+      style={{ ...s.primaryBtn, background: C.teal }}
+      onClick={saveName}
+      disabled={nameSaving}
+    >
+      {nameSaving ? 'Saving…' : 'Save name'}
+    </button>
+  </div>
+) : (
+  <button
+    style={s.editNameBtn}
+    onClick={() => {
+      setEditName(account.fullName || '');
+      setEditingName(true);
+    }}
+  >
+    {account.fullName ? 'Edit name' : 'Add your name'}
+  </button>
+)}
 
           <div style={s.accountDetailsPhone}>
             {account.phone.slice(0, 2)}••••••{account.phone.slice(-2)}
@@ -1536,6 +1595,17 @@ accountDetailsPlan: {
 
   primaryBtn: { width: '100%', padding: '15px', color: C.ink, border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '15px', fontWeight: 500, marginTop: '8px' },
   secondaryBtn: { width: '100%', padding: '13px', background: 'transparent', border: '1px solid', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500, marginTop: '8px' },
+  editNameBtn: {
+  width: '100%',
+  padding: '8px 10px',
+  background: 'transparent',
+  border: `1px solid ${C.hairline}`,
+  borderRadius: '7px',
+  color: C.teal,
+  cursor: 'pointer',
+  fontSize: '12px',
+  marginBottom: '12px',
+},
 
   drawer: { position: 'fixed', right: 0, top: 0, bottom: 0, width: '400px', background: C.surface, borderLeft: `1px solid ${C.hairline}`, padding: '20px', overflowY: 'auto', zIndex: 100 },
   drawerHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', paddingBottom: '16px', borderBottom: `1px solid ${C.hairline}` },

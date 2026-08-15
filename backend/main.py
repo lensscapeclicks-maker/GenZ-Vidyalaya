@@ -79,6 +79,10 @@ class LoginRequest(BaseModel):
     phone: str
     mpin: str
 
+class UpdateNameRequest(BaseModel):
+    phone: str
+    full_name: str
+
 class ConsumeRequest(BaseModel):
     phone: str
 
@@ -377,10 +381,43 @@ async def login(req: LoginRequest):
         raise HTTPException(status_code=404, detail="No account found for this phone number")
     if not verify_mpin(req.mpin, user["mpin_hash"]):
         raise HTTPException(status_code=401, detail="Incorrect MPIN")
-
     return compute_status(user)
 
+
+@app.post("/update-name")
+async def update_name(req: UpdateNameRequest):
+    require_supabase()
+
+    phone = normalize_phone(req.phone)
+    full_name = req.full_name.strip()
+
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Please enter your full name")
+
+    if len(full_name) > 80:
+        raise HTTPException(status_code=400, detail="Name is too long")
+
+    user = get_user_row(phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for this phone number")
+
+    try:
+        result = (
+            supabase.table("users")
+            .update({"full_name": full_name})
+            .eq("phone", phone)
+            .execute()
+        )
+
+        updated = result.data[0] if result.data else get_user_row(phone)
+        return compute_status(updated)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/account-status/{phone}")
+
 async def account_status(phone: str):
     require_supabase()
     phone = normalize_phone(phone)
