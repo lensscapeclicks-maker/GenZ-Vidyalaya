@@ -798,8 +798,17 @@ const AccountIndicator = () => (
         </div>
       )}
 
-      <div style={{ display: 'flex' }}>
-        <div style={{ ...s.content, flex: 1, marginRight: drawer ? '400px' : '0', transition: 'margin-right 0.25s ease' }}>
+      <div style={{ display: 'flex', width: '100%', minWidth: 0 }}>
+        <div
+  style={{
+    ...s.content,
+    flex: 1,
+    minWidth: 0,
+    width: '100%',
+    marginRight: 0,
+    transition: 'margin-right 0.25s ease',
+  }}
+>
 
           {loading && <div style={s.loading}><p>Getting this ready…</p></div>}
 
@@ -1418,8 +1427,8 @@ function FeedbackModal({
 const s = {
   app: { minHeight: '100vh', background: C.ink, color: C.chalk, fontFamily: "'IBM Plex Sans', sans-serif" },
 
-  nav: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 28px', borderBottom: `1px solid ${C.hairline}` },
-  navRight: { display: 'flex', alignItems: 'center', gap: '10px' },
+  nav: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${C.hairline}`, gap: '10px' },
+  navRight: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 },
   logo: { fontFamily: "'IBM Plex Serif', serif", fontWeight: 500, fontSize: '19px' },
   langToggle: { padding: '6px 14px', background: 'transparent', border: `1px solid ${C.hairline}`, borderRadius: '16px', color: C.chalkDim, cursor: 'pointer', fontSize: '12px', fontFamily: "'IBM Plex Mono', monospace" },
 
@@ -1534,12 +1543,26 @@ accountDetailsPlan: {
   starRow: { display: 'flex', gap: '8px', marginBottom: '18px' },
   feedbackTextarea: { width: '100%', padding: '12px 14px', background: C.ink, border: `1px solid ${C.hairline}`, borderRadius: '8px', color: C.chalk, fontSize: '13.5px', marginBottom: '16px', boxSizing: 'border-box', fontFamily: "'IBM Plex Sans', sans-serif", resize: 'vertical' },
 
-  tabs: { display: 'flex', padding: '0 24px', borderBottom: `1px solid ${C.hairline}`, background: C.ink },
-  tab: { padding: '12px 16px', background: 'transparent', border: 'none', color: C.slate, cursor: 'pointer', fontSize: '13.5px', borderBottom: '2px solid transparent' },
+ tabs: {
+  display: 'flex',
+  padding: '0 12px',
+  borderBottom: `1px solid ${C.hairline}`,
+  background: C.ink,
+  overflowX: 'auto',
+  WebkitOverflowScrolling: 'touch',
+},
+  tab: { padding: '12px 16px', flexShrink: 0, background: 'transparent', border: 'none', color: C.slate, cursor: 'pointer', fontSize: '13.5px', borderBottom: '2px solid transparent' },
   timerBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 24px', borderBottom: '1px solid' },
   submitEarlyBtn: { background: C.surface2, color: C.chalk, border: `1px solid ${C.hairline}`, padding: '6px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' },
 
-  content: { padding: '24px', maxWidth: '820px', margin: '0 auto' },
+  content: {
+  padding: '24px',
+  maxWidth: '820px',
+  width: '100%',
+  boxSizing: 'border-box',
+  margin: '0 auto',
+  minWidth: 0,
+},
   loading: { textAlign: 'center', padding: '60px', color: C.slate },
   title: { fontFamily: "'IBM Plex Serif', serif", fontSize: '19px', fontWeight: 500, marginBottom: '16px', color: C.chalk },
   card: { background: C.surface, border: `1px solid ${C.hairline}`, borderRadius: '10px', padding: '16px', marginBottom: '12px' },
@@ -1607,7 +1630,19 @@ accountDetailsPlan: {
   marginBottom: '12px',
 },
 
-  drawer: { position: 'fixed', right: 0, top: 0, bottom: 0, width: '400px', background: C.surface, borderLeft: `1px solid ${C.hairline}`, padding: '20px', overflowY: 'auto', zIndex: 100 },
+  drawer: {
+  position: 'fixed',
+  right: 0,
+  top: 0,
+  bottom: 0,
+  width: 'min(400px, 100vw)',
+  boxSizing: 'border-box',
+  background: C.surface,
+  borderLeft: `1px solid ${C.hairline}`,
+  padding: '20px',
+  overflowY: 'auto',
+  zIndex: 100,
+},
   drawerHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', paddingBottom: '16px', borderBottom: `1px solid ${C.hairline}` },
   drawerTitle: { fontFamily: "'IBM Plex Serif', serif", fontSize: '17px', fontWeight: 500, flex: 1, lineHeight: '1.3' },
   closeBtn: { background: 'transparent', border: `1px solid ${C.hairline}`, color: C.chalkDim, width: '30px', height: '30px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
