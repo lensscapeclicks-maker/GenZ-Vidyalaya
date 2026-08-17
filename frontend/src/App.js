@@ -679,7 +679,16 @@ const AccountIndicator = () => (
     return (
       <div style={s.app}>
         <nav style={s.nav}>
-          <div style={s.logo}>GenZ <span style={{ color: C.teal }}>Vidyalaya</span></div>
+          <div style={s.brand}>
+  <img
+    src="/branding/genz-vidyalaya-logo.png"
+    alt="GenZ Vidyalaya"
+    style={s.brandLogo}
+  />
+  <span style={s.brandText}>
+    GenZ <span style={{ color: C.teal }}>Vidyalaya</span>
+  </span>
+</div>
           <div style={s.navRight}>
             <button style={s.feedbackNavBtn} onClick={() => setShowFeedback(true)}>
               <MessageSquare size={13} /> Feedback
@@ -1429,7 +1438,25 @@ const s = {
 
   nav: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${C.hairline}`, gap: '10px' },
   navRight: { display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 },
-  logo: { fontFamily: "'IBM Plex Serif', serif", fontWeight: 500, fontSize: '19px' },
+ brand: {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '9px',
+  fontFamily: "'IBM Plex Serif', serif",
+  fontWeight: 500,
+  fontSize: '19px',
+},
+
+brandLogo: {
+  width: '38px',
+  height: '38px',
+  objectFit: 'contain',
+  display: 'block',
+},
+
+brandText: {
+  whiteSpace: 'nowrap',
+},
   langToggle: { padding: '6px 14px', background: 'transparent', border: `1px solid ${C.hairline}`, borderRadius: '16px', color: C.chalkDim, cursor: 'pointer', fontSize: '12px', fontFamily: "'IBM Plex Mono', monospace" },
 
   feedbackNavBtn: { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'transparent', border: `1px solid ${C.hairline}`, borderRadius: '16px', color: C.chalkDim, cursor: 'pointer', fontSize: '12px' },
